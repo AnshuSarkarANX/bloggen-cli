@@ -1,0 +1,64 @@
+{
+  "name": "bloggen-cli",
+  "version": "1.0.0",
+  "description": "AI-powered CLI for generating SEO-optimized IT job market blog posts",
+  "main": "index.js",
+  "bin": {
+    "bloggen": "./bin/bloggen.js"
+  },
+  "scripts": {
+    "start": "node bin/bloggen.js",
+    "dev": "nodemon bin/bloggen.js",
+    "test": "node bin/bloggen.js --help",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.2.0",
+    "chalk": "^4.1.2",
+    "commander": "^11.0.0",
+    "dotenv": "^17.2.1",
+    "fs-extra": "^11.3.1",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "keywords": [
+    "cli",
+    "blog",
+    "ai",
+    "content",
+    "seo",
+    "it-jobs",
+    "gemini",
+    "content-generation",
+    "tech-careers",
+    "automation",
+    "content-marketing"
+  ],
+  "author": {
+    "name": "Your Name",
+    "email": "your.email@example.com",
+    "url": "https://yourwebsite.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/bloggen-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/bloggen-cli/issues"
+  },
+  "homepage": "https://github.com/yourusername/bloggen-cli#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "preferGlobal": true
+}
