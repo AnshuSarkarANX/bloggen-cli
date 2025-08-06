@@ -8,6 +8,7 @@ const path = require("path");
 const ContentGenerator = require("../src/content-generator");
 const FileManager = require("../src/file-manager");
 const SEOOptimizer = require("../src/seo-optimizer");
+const GeminiWorkflowParser = require("../src/gemini-workflow-parser");
 
 // Display banner
 function showBanner() {
@@ -297,7 +298,7 @@ async function generateBlog(topic, options) {
     console.log("");
 
     // Generate content with spinner
-    const spinner = ora("Generating IT job market blog content...").start();
+    const spinner = ora("Generating blog content...").start();
 
     const result = await generator.generateContent(actualTopic, {
       customPrompt: options.prompt,
@@ -305,7 +306,7 @@ async function generateBlog(topic, options) {
 
     spinner.succeed("Content generated successfully!");
     const seoSpinner = ora("Optimizing content for SEO...").start();
-   
+
     const seoOptimizer = new SEOOptimizer(process.env.WEBSITE_URL);
     const seoAnalysis = seoOptimizer.optimizeContent(
       result.content,
@@ -329,9 +330,10 @@ async function generateBlog(topic, options) {
       outputDir: options.dir,
     });
 
-    // Enhanced success feedback with SEO metrics
+    // Enhanced success feedback with SEO metrics and JSON format
     console.log(chalk.green("\n✅ Blog post generated and optimized!"));
     console.log(chalk.blue(`📄 File: ${fileInfo.filepath}`));
+    console.log(chalk.blue(`📂 Format: JSON (API-ready)`));
     console.log(chalk.blue(`📊 Word count: ${result.metadata.wordCount}`));
     console.log(
       chalk.blue(
@@ -339,16 +341,19 @@ async function generateBlog(topic, options) {
       )
     );
     console.log(
-      chalk.blue(
-        `🔑 Keyword density: ${seoAnalysis.analysis.keywordAnalysis.primary.density.toFixed(
-          1
-        )}%`
-      )
+      chalk.blue(`🏷️  Category: ${JSON.parse(enhancedResult.content).category}`)
     );
     console.log(
-      chalk.blue(`📖 Readability: ${seoAnalysis.analysis.readability.grade}`)
+      chalk.blue(`🔑 Keywords: ${JSON.parse(enhancedResult.content).keywords}`)
     );
     console.log(chalk.blue(`🤖 Model: ${result.metadata.modelUsed}`));
+    // Show JSON preview
+    const jsonData = JSON.parse(enhancedResult.content);
+    console.log(chalk.gray("\n📖 JSON Structure Preview:"));
+    console.log(chalk.gray(`Title: ${jsonData.title.substring(0, 60)}...`));
+    console.log(chalk.gray(`Category: ${jsonData.category}`));
+    console.log(chalk.gray(`Tags: ${jsonData.tags.slice(0, 3).join(", ")}`));
+    console.log(chalk.gray(`Date: ${jsonData.date}`));
 
     // Show SEO suggestions
     if (seoAnalysis.suggestions.length > 0) {
@@ -429,21 +434,149 @@ program
   });
 
 // Help override with examples
-program.on('--help', () => {
-  console.log('');
-  console.log('Examples:');
-  console.log('  $ bloggen "Remote JavaScript developer trends 2025"');
-  console.log('  $ bloggen --prompt "Analyze salary trends for senior developers"');
-  console.log('  $ bloggen "Python career guide" --output python-guide.txt');
-  console.log('  $ bloggen analyze filename.txt --keyword "Python developer"');
-  console.log('  $ bloggen rewrite filename.txt --keyword "DevOps engineer" --target-score 90');
-  console.log('  $ bloggen list                   # Show all generated posts');
-  console.log('  $ bloggen info                   # Show configuration status');
-  console.log('');
-  console.log('Environment Variables:');
-  console.log('  GEMINI_API_KEY    Your Gemini API key (optional)');
-  console.log('');
+program.on("--help", () => {
+  console.log("");
+  console.log("Examples:");
+  console.log(
+    '  $ bloggen "JavaScript developer trends 2025"                    # Simple topic'
+  );
+  console.log(
+    '  $ bloggen workflow "Create a comprehensive Python career guide" # Intelligent workflow'
+  );
+  console.log(
+    '  $ bloggen workflow "Write a beginner tutorial on React hooks"   # Specific audience & type'
+  );
+  console.log(
+    '  $ bloggen workflow "Generate a comparison between Vue and React" # Comparison content'
+  );
+  console.log(
+    '  $ bloggen workflow "..." --preview                             # Preview workflow parsing'
+  );
+  console.log(
+    '  $ bloggen analyze filename.json --keyword "Python"             # Analyze existing content'
+  );
+  console.log("");
+  console.log("Workflow Instructions Support:");
+  console.log(
+    "  • Content types: blog post, guide, tutorial, analysis, comparison"
+  );
+  console.log("  • Audiences: beginners, professionals, general, experts");
+  console.log("  • Styles: professional, casual, technical, friendly");
+  console.log("  • Requirements: examples, data, trends, step-by-step");
+  console.log("");
 });
+
+// workflow command for automation
+program
+  .command("workflow <instruction>")
+  .description("Generate content from natural language instructions")
+  .option("-o, --output <filename>", "Custom output filename")
+  .option("--preview", "Show parsed workflow without generating content")
+  .action(async (instruction, options) => {
+    try {
+      showBanner();
+
+      const apiKey = getAPIKey();
+
+      // Parse instruction with Gemini
+      const parser = new GeminiWorkflowParser(apiKey);
+      const workflow = await parser.parseInstruction(instruction);
+
+      console.log(chalk.green("✅ Instruction parsed successfully!"));
+
+      // Show preview of parsed workflow
+      console.log(chalk.blue("\n📋 Parsed Workflow:"));
+      console.log(chalk.gray(`Content Type: ${workflow.contentType}`));
+      console.log(chalk.gray(`Topic: ${workflow.topic}`));
+      console.log(chalk.gray(`Audience: ${workflow.audience}`));
+      console.log(
+        chalk.gray(
+          `Style: ${workflow.style.tone}, ${workflow.style.depth} depth`
+        )
+      );
+      console.log(chalk.gray(`Keywords: ${workflow.seoKeywords.join(", ")}`));
+
+      if (workflow.fallbackUsed) {
+        console.log(
+          chalk.yellow(
+            "⚠️ Used fallback parsing - results may be less accurate"
+          )
+        );
+      }
+
+      // If preview mode, show workflow and exit
+      if (options.preview) {
+        console.log(chalk.blue("\n🔍 Full Workflow Details:"));
+        console.log(JSON.stringify(workflow, null, 2));
+        return;
+      }
+
+      // Generate content based on workflow
+      const generator = new ContentGenerator(apiKey);
+      const contentSpinner = ora(
+        "Generating intelligent content based on parsed workflow..."
+      ).start();
+
+      const result = await generator.generateWorkflowContent(workflow);
+
+      contentSpinner.succeed("Content generated successfully!");
+
+      // SEO optimization
+      const seoSpinner = ora("Optimizing content for SEO...").start();
+      const seoOptimizer = new SEOOptimizer(process.env.WEBSITE_URL);
+      const seoAnalysis = seoOptimizer.optimizeContent(
+        result.content,
+        workflow.topic,
+        result.metadata
+      );
+      seoSpinner.succeed(
+        `SEO optimization complete! Score: ${seoAnalysis.seoScore.grade} (${seoAnalysis.seoScore.percentage}%)`
+      );
+
+      // Save content
+      const fileManager = new FileManager();
+      const enhancedResult = {
+        ...result,
+        seo: seoAnalysis,
+        workflow: workflow,
+      };
+
+      const fileInfo = await fileManager.saveBlogPost(enhancedResult, {
+        filename: options.output,
+      });
+
+      // Success feedback
+      console.log(chalk.green("\n✅ Intelligent blog post generated!"));
+      console.log(chalk.blue(`📄 File: ${fileInfo.filepath}`));
+      console.log(
+        chalk.blue(
+          `🎯 Content Type: ${workflow.contentType} for ${workflow.audience}`
+        )
+      );
+      console.log(chalk.blue(`📊 Word count: ${result.metadata.wordCount}`));
+      console.log(
+        chalk.blue(
+          `🔍 SEO Score: ${seoAnalysis.seoScore.grade} (${seoAnalysis.seoScore.percentage}%)`
+        )
+      );
+      console.log(
+        chalk.blue(
+          `🎨 Style: ${workflow.style.tone} tone, ${workflow.style.depth} depth`
+        )
+      );
+      console.log(chalk.blue(`🤖 Model: ${result.metadata.modelUsed}`));
+
+      if (seoAnalysis.suggestions.length > 0) {
+        console.log(chalk.yellow("\n💡 SEO Suggestions:"));
+        seoAnalysis.suggestions.slice(0, 3).forEach((suggestion, index) => {
+          console.log(`   ${index + 1}. ${suggestion.message}`);
+        });
+      }
+    } catch (error) {
+      console.log(chalk.red(`❌ Workflow generation failed: ${error.message}`));
+      process.exit(1);
+    }
+  });
 
 // List generated posts
 program

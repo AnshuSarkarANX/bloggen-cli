@@ -24,6 +24,134 @@ class ContentGenerator {
     this.currentModelIndex = 0;
   }
 
+  async generateWorkflowContent(workflow, options = {}) {
+    const enhancedPrompt =
+      options.customPrompt || this.buildWorkflowPrompt(workflow);
+
+    console.log(chalk.gray(`📝 Content type: ${workflow.contentType}`));
+    console.log(chalk.gray(`🎯 Target audience: ${workflow.audience}`));
+    console.log(chalk.gray(`📏 Estimated length: ${workflow.estimatedLength}`));
+
+    const result = await this.generateContent(workflow.topic, {
+      customPrompt: enhancedPrompt,
+    });
+
+    // Enhance metadata with workflow information
+    result.metadata.workflow = {
+      contentType: workflow.contentType,
+      audience: workflow.audience,
+      style: workflow.style,
+      requirements: workflow.requirements,
+      originalInstruction: workflow.originalInstruction,
+      seoKeywords: workflow.seoKeywords,
+    };
+
+    return result;
+  }
+  buildWorkflowPrompt(workflow) {
+    const {
+      contentType,
+      topic,
+      audience,
+      style,
+      requirements,
+      specialInstructions,
+      seoKeywords,
+    } = workflow;
+
+    let prompt = `Create ${this.getContentTypeDescription(
+      contentType
+    )} about "${topic}".
+
+Target Audience: ${audience}
+Writing Style: ${style.tone} tone, ${style.depth} depth, ${style.format} format
+
+Content Structure:`;
+
+    // Add structure based on content type
+    switch (contentType) {
+      case "guide":
+        prompt += "\n- Clear introduction explaining what readers will learn";
+        prompt += "\n- Step-by-step sections with actionable guidance";
+        prompt += "\n- Examples and practical applications";
+        prompt += "\n- Conclusion with key takeaways";
+        break;
+
+      case "tutorial":
+        prompt += "\n- Prerequisites and requirements";
+        prompt += "\n- Step-by-step instructions with explanations";
+        prompt += "\n- Code examples or practical demonstrations";
+        prompt += "\n- Troubleshooting common issues";
+        break;
+
+      case "analysis":
+        prompt += "\n- Executive summary of key findings";
+        prompt += "\n- Detailed analysis with supporting data";
+        prompt += "\n- Implications and future outlook";
+        prompt += "\n- Actionable recommendations";
+        break;
+
+      case "comparison":
+        prompt += "\n- Clear comparison criteria";
+        prompt += "\n- Side-by-side feature analysis";
+        prompt += "\n- Pros and cons for each option";
+        prompt += "\n- Recommendations for different use cases";
+        break;
+
+      default:
+        prompt += "\n- Engaging introduction that hooks the reader";
+        prompt += "\n- Well-structured main content with clear sections";
+        prompt += "\n- Supporting examples and evidence";
+        prompt += "\n- Strong conclusion with actionable insights";
+    }
+
+    // Add specific requirements
+    if (requirements.includeExamples)
+      prompt += "\n\n✓ Include practical examples and real-world case studies";
+    if (requirements.includeData)
+      prompt += "\n✓ Include relevant statistics, data, and research findings";
+    if (requirements.includeTrends)
+      prompt += "\n✓ Discuss current trends and future predictions";
+    if (requirements.includeSteps)
+      prompt += "\n✓ Provide clear, actionable step-by-step guidance";
+
+    // Add special instructions
+    if (specialInstructions && specialInstructions.length > 0) {
+      prompt += "\n\nSpecial Requirements:";
+      specialInstructions.forEach((instruction) => {
+        prompt += `\n- ${instruction}`;
+      });
+    }
+
+    // Add SEO requirements
+    prompt += `\n\nSEO Optimization:`;
+    prompt += `\n- Integrate these keywords naturally: ${seoKeywords.join(
+      ", "
+    )}`;
+    prompt += `\n- Use proper heading structure (H1, H2, H3)`;
+    prompt += `\n- Write engaging meta description worthy content`;
+    prompt += `\n- Include internal linking opportunities`;
+
+    prompt +=
+      "\n\nGenerate comprehensive, engaging, and valuable content that serves the target audience while being optimized for search engines.";
+
+    return prompt;
+  }
+
+  getContentTypeDescription(contentType) {
+    const descriptions = {
+      "blog-post": "a comprehensive and engaging blog post",
+      guide: "a detailed step-by-step guide",
+      tutorial: "an educational tutorial with practical examples",
+      analysis: "an in-depth analysis with data and insights",
+      comparison: "a detailed comparison with recommendations",
+      listicle: "an engaging list-style article",
+      "news-article": "a timely news-style article",
+    };
+
+    return descriptions[contentType] || "a comprehensive blog post";
+  }
+
   /**
    * Try generating content with fallback models
    */

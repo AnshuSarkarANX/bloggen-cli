@@ -30,14 +30,14 @@ class FileManager {
    */
   generateFilename(topic, customName = null) {
     if (customName) {
-      return customName.endsWith(".txt") ? customName : `${customName}.txt`;
+      return customName.endsWith(".json") ? customName : `${customName}.json`;
     }
 
     const date = new Date().toISOString().split("T")[0];
     const time = new Date().toTimeString().split(" ")[0].replace(/:/g, "-");
     const slug = this.createSlug(topic);
 
-    return `${date}-${time}-${slug}.txt`;
+    return `${date}-${time}-${slug}.json`;
   }
 
   /**
@@ -57,37 +57,110 @@ class FileManager {
   formatBlogPost(result, additionalMetadata = {}) {
     const { content, metadata } = result;
     const seoData = this.extractSEOData(content);
-    const timestamp = new Date().toLocaleString();
+    const timestamp = new Date().toISOString();
 
-    return `=== BLOG POST METADATA ===
-Title: ${seoData.title}
-Meta Description: ${seoData.metaDescription}
-Keywords: ${seoData.keywords}
-Generated: ${timestamp}
-Model Used: ${metadata.modelUsed}
-Word Count: ${metadata.wordCount}
-Backlinks Included: ${metadata.backlinksIncluded}
-Topic: ${metadata.topic}
-Slug: ${metadata.slug}
-Website: ${this.websiteUrl}
+    // Extract title from content
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const title = titleMatch ? titleMatch[1].trim() : seoData.title;
 
-=== SEO OPTIMIZED CONTENT ===
-${content}
+    // Get current date/time
+    const currentDate = new Date();
 
-=== TECHNICAL DETAILS ===
-- Generator: Bloggen CLI v1.0.0
-- Target: IT Job Market Blog
-- Format: SEO-optimized Markdown
-- Date Generated: ${metadata.generatedAt}
-- File Created: ${timestamp}
-- Ready for: WordPress, Ghost, Static Sites
+    // Create JSON structure for blog posting APIs
+    const blogPost = {
+      title: title,
+      content: content,
+      image:
+        "https://via.placeholder.com/800x400/2563eb/ffffff?text=" +
+        encodeURIComponent(title.substring(0, 50)),
+      tags: seoData.keywords.split(", ").filter((tag) => tag.trim().length > 0),
+      keywords: seoData.keywords,
+      datetime: timestamp,
+      date: currentDate.toISOString().split("T")[0], // YYYY-MM-DD format
+      category: this.determineCategory(content, metadata.topic),
+      author: process.env.AUTHOR_NAME || "AI Content Generator",
 
-=== USAGE INSTRUCTIONS ===
-1. Review content for accuracy and tone
-2. Copy content section for publishing
-3. Use metadata for CMS fields
-4. Ensure backlinks are appropriate
-5. Optimize images if needed`;
+      // Additional metadata for reference
+      metadata: {
+        generatedAt: timestamp,
+        modelUsed: metadata.modelUsed,
+        wordCount: metadata.wordCount,
+        backlinksIncluded: metadata.backlinksIncluded,
+        topic: metadata.topic,
+        slug: metadata.slug,
+        website: this.websiteUrl,
+        seoScore: additionalMetadata.seoScore || null,
+
+        // API-ready fields
+        metaDescription: seoData.metaDescription,
+        canonicalUrl: `${this.websiteUrl}/${
+          metadata.slug || this.generateSlug(title)
+        }`,
+
+        // Social media tags
+        ogTitle: title,
+        ogDescription: seoData.metaDescription,
+        ogImage:
+          "https://via.placeholder.com/1200x630/2563eb/ffffff?text=" +
+          encodeURIComponent(title.substring(0, 40)),
+
+        // Technical details
+        generator: "Bloggen CLI v1.0.0",
+        format: "JSON",
+        ready_for: ["WordPress", "Ghost", "Medium", "Dev.to", "Blogger"],
+      },
+    };
+
+    return JSON.stringify(blogPost, null, 2);
+  }
+
+  /**
+   * Determine blog category based on content analysis
+   */
+  determineCategory(content, topic) {
+    const contentLower = (content + " " + topic).toLowerCase();
+
+    // IT job market categories
+    if (
+      contentLower.includes("salary") ||
+      contentLower.includes("compensation")
+    )
+      return "Salary & Compensation";
+    if (
+      contentLower.includes("remote") ||
+      contentLower.includes("work from home")
+    )
+      return "Remote Work";
+    if (contentLower.includes("interview") || contentLower.includes("hiring"))
+      return "Job Interviews";
+    if (contentLower.includes("career") || contentLower.includes("path"))
+      return "Career Development";
+    if (contentLower.includes("skill") || contentLower.includes("learning"))
+      return "Skills & Learning";
+    if (contentLower.includes("trend") || contentLower.includes("market"))
+      return "Industry Trends";
+    if (
+      contentLower.includes("javascript") ||
+      contentLower.includes("python") ||
+      contentLower.includes("react")
+    )
+      return "Programming Languages";
+    if (contentLower.includes("devops") || contentLower.includes("cloud"))
+      return "DevOps & Cloud";
+    if (
+      contentLower.includes("security") ||
+      contentLower.includes("cybersecurity")
+    )
+      return "Cybersecurity";
+    if (contentLower.includes("data") || contentLower.includes("analytics"))
+      return "Data Science";
+    if (
+      contentLower.includes("ai") ||
+      contentLower.includes("machine learning")
+    )
+      return "AI & Machine Learning";
+
+    return "IT Job Market"; // Default category
   }
 
   /**
