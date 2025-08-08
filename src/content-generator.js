@@ -25,29 +25,85 @@ class ContentGenerator {
   }
 
   async generateWorkflowContent(workflow, options = {}) {
-    const enhancedPrompt =
-      options.customPrompt || this.buildWorkflowPrompt(workflow);
+    // Use the parser's enhanced prompt generation
+    const parser = new (require("./gemini-workflow-parser"))(this.apiKey);
+    const enhancedPrompt = parser.generateContentPrompt(workflow);
 
     console.log(chalk.gray(`📝 Content type: ${workflow.contentType}`));
-    console.log(chalk.gray(`🎯 Target audience: ${workflow.audience}`));
-    console.log(chalk.gray(`📏 Estimated length: ${workflow.estimatedLength}`));
+    console.log(
+      chalk.gray(`🎯 Target audience: ${workflow.audience?.level || "general"}`)
+    );
 
+    if (workflow.lengthConstraints && workflow.lengthConstraints.wordLimit) {
+      console.log(
+        chalk.red(
+          `🚨 CRITICAL: Maximum ${workflow.lengthConstraints.wordLimit} words`
+        )
+      );
+    }
+
+    // Generate content with the enhanced prompt that includes word count constraints
     const result = await this.generateContent(workflow.topic, {
       customPrompt: enhancedPrompt,
     });
+
+    // Post-processing word count validation
+    if (
+      workflow.lengthConstraints &&
+      workflow.lengthConstraints.hasCriticalLimit
+    ) {
+      const wordCount = this.countWords(result.content);
+      const limit = workflow.lengthConstraints.wordLimit;
+
+      if (
+        workflow.lengthConstraints.constraintType === "maximum" &&
+        wordCount > limit
+      ) {
+        console.log(
+          chalk.yellow(
+            `⚠️ Generated ${wordCount} words, but limit is ${limit}. Trimming...`
+          )
+        );
+        result.content = this.trimToWordLimit(result.content, limit);
+        result.metadata.wordCount = this.countWords(result.content);
+        result.metadata.trimmed = true;
+      }
+    }
 
     // Enhance metadata with workflow information
     result.metadata.workflow = {
       contentType: workflow.contentType,
       audience: workflow.audience,
-      style: workflow.style,
-      requirements: workflow.requirements,
+      lengthConstraints: workflow.lengthConstraints,
       originalInstruction: workflow.originalInstruction,
-      seoKeywords: workflow.seoKeywords,
+      modelUsed: workflow.modelUsed,
     };
 
     return result;
   }
+
+  // Add helper methods
+  countWords(content) {
+    return content.trim().split(/\s+/).length;
+  }
+
+  trimToWordLimit(content, wordLimit) {
+    const words = content.trim().split(/\s+/);
+    if (words.length <= wordLimit) return content;
+
+    // Trim to word limit and try to end at a sentence
+    const trimmed = words.slice(0, wordLimit);
+    let result = trimmed.join(" ");
+
+    // Try to end at last complete sentence
+    const lastSentence = result.lastIndexOf(".");
+    if (lastSentence > result.length * 0.8) {
+      result = result.substring(0, lastSentence + 1);
+    }
+
+    return result;
+  }
+    
   buildWorkflowPrompt(workflow) {
     const {
       contentType,

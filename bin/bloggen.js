@@ -394,11 +394,11 @@ program
   .version("1.0.0");
 
 // Main generate command
-program
-  .argument("[topic]", "Blog topic (IT job market focused)")
-  .option("-p, --prompt <text>", "Custom prompt for content generation")
-  .option("-o, --output <file>", "Output filename (default: auto-generated)")
-  .action(generateBlog);
+// program
+//   .argument("[topic]", "Blog topic (IT job market focused)")
+//   .option("-p, --prompt <text>", "Custom prompt for content generation")
+//   .option("-o, --output <file>", "Output filename (default: auto-generated)")
+//   .action(generateBlog);
 
 // Info command
 program
@@ -468,7 +468,7 @@ program.on("--help", () => {
 
 // workflow command for automation
 program
-  .command("workflow <instruction>")
+  .argument("[instruction]", "Blog topic (IT job market focused)")
   .description("Generate content from natural language instructions")
   .option("-o, --output <filename>", "Custom output filename")
   .option("--preview", "Show parsed workflow without generating content")
@@ -483,12 +483,51 @@ program
       const workflow = await parser.parseInstruction(instruction);
 
       console.log(chalk.green("✅ Instruction parsed successfully!"));
+      console.log(workflow);
+  
 
       // Show preview of parsed workflow
-      console.log(chalk.blue("\n📋 Parsed Workflow:"));
+      console.log(chalk.blue("\n📋 Parsed Workflow & Constraints:"));
       console.log(chalk.gray(`Content Type: ${workflow.contentType}`));
       console.log(chalk.gray(`Topic: ${workflow.topic}`));
-      console.log(chalk.gray(`Audience: ${workflow.audience}`));
+      console.log(
+        chalk.gray(`Audience: ${workflow.audience.level || "general"}`)
+      );
+
+      // Enhanced length constraint feedback
+      if (workflow.lengthConstraints && workflow.lengthConstraints.wordLimit) {
+        const constraint = workflow.lengthConstraints;
+        const priorityColor =
+          constraint.priority === "critical"
+            ? chalk.red
+            : constraint.priority === "important"
+            ? chalk.yellow
+            : chalk.gray;
+
+        console.log(
+          priorityColor(
+            `📏 Length: ${constraint.constraintType} ${constraint.wordLimit} words (${constraint.priority})`
+          )
+        );
+        console.log(chalk.gray(`   Reasoning: ${constraint.reasoning}`));
+      }
+
+      // Show conflicts if detected
+      const validation = parser.validateConstraints(workflow);
+      if (validation.conflicts.length > 0) {
+        console.log(chalk.red("\n⚠️ Constraint Conflicts Detected:"));
+        validation.conflicts.forEach((conflict) => {
+          console.log(chalk.yellow(`   • ${conflict.message}`));
+          console.log(chalk.gray(`     Suggestion: ${conflict.suggestion}`));
+        });
+      }
+
+      if (validation.warnings.length > 0) {
+        console.log(chalk.yellow("\n💡 Constraint Warnings:"));
+        validation.warnings.forEach((warning) => {
+          console.log(chalk.gray(`   • ${warning.message}`));
+        });
+      }
       console.log(
         chalk.gray(
           `Style: ${workflow.style.tone}, ${workflow.style.depth} depth`

@@ -4,40 +4,152 @@ const chalk = require("chalk");
 class GeminiWorkflowParser {
   constructor(apiKey) {
     this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    // Define model fallback chain - ordered by preference
+    this.modelChain = [
+      { name: 'gemini-2.5-flash', description: 'Primary (fastest)' },
+      { name: 'gemini-1.5-flash', description: 'Fallback 1 (reliable)' },
+      { name: 'gemini-1.5-pro', description: 'Fallback 2 (comprehensive)' },
+      { name: 'gemini-1.0-pro', description: 'Fallback 3 (stable)' }
+    ];
+    
     this.workflowCache = new Map();
+    this.modelFailures = new Map(); // Track model failures
   }
 
   /**
-   * Parse natural language instruction into structured workflow
+   * Parse natural language instruction with multi-model fallback
    */
   async parseInstruction(instruction) {
-    try {
-      console.log(chalk.blue("🧠 Analyzing instruction with Gemini..."));
+    console.log(chalk.blue("🧠 Analyzing instruction with Gemini..."));
 
-      // Check cache first
-      const cachedResult = this.getCachedParsing(instruction);
-      if (cachedResult) {
-        console.log(chalk.gray("💾 Using cached parsing result"));
-        return cachedResult;
+    // Check cache first
+    const cachedResult = this.getCachedParsing(instruction);
+    if (cachedResult) {
+      console.log(chalk.gray("💾 Using cached parsing result"));
+      return cachedResult;
+    }
+
+    // Try each model in the fallback chain
+    for (let i = 0; i < this.modelChain.length; i++) {
+      const modelInfo = this.modelChain[i];
+      
+      // Skip models that have failed recently (rate limiting)
+      if (this.isModelTemporarilyBlocked(modelInfo.name)) {
+        console.log(chalk.yellow(`⏭️ Skipping ${modelInfo.name} (temporarily blocked)`));
+        continue;
       }
 
-      const prompt = this.buildParsingPrompt(instruction);
-      const result = await this.model.generateContent(prompt);
-      const parsedWorkflow = JSON.parse(result.response.text());
+      try {
+        console.log(chalk.blue(`🤖 Trying ${modelInfo.name} (${modelInfo.description})...`));
+        
+        const result = await this.tryModelParsing(modelInfo.name, instruction);
+        
+        if (result) {
+          console.log(chalk.green(`✅ Successfully parsed with ${modelInfo.name}`));
+          
+          // Cache successful result
+          this.cacheResult(instruction, result);
+          
+          // Clear any failure records for this model
+          this.clearModelFailure(modelInfo.name);
+          
+          return result;
+        }
+      } catch (error) {
+        console.log(chalk.yellow(`⚠️ ${modelInfo.name} failed: ${error.message}`));
+        
+        // Record model failure
+        this.recordModelFailure(modelInfo.name, error);
+        
+        // Continue to next model
+        continue;
+      }
+    }
 
-      // Cache the result
-      this.cacheResult(instruction, parsedWorkflow);
+    // All models failed, use regex fallback
+    console.log(chalk.red("❌ All Gemini models failed, using regex fallback..."));
+    return this.createFallbackWorkflow(instruction);
+  }
 
-      return this.validateAndEnhance(parsedWorkflow, instruction);
+  /**
+   * Try parsing with a specific model
+   */
+  async tryModelParsing(modelName, instruction) {
+    const model = this.genAI.getGenerativeModel({ model: modelName });
+    const prompt = this.buildParsingPrompt(instruction);
+    
+    try {
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text();
+      
+      // Validate JSON response
+      const parsedWorkflow = this.parseAndValidateJSON(responseText);
+      
+      if (parsedWorkflow) {
+        return this.validateAndEnhance(parsedWorkflow, instruction, modelName);
+      }
+      
+      return null;
     } catch (error) {
-      console.log(chalk.yellow("⚠️ Gemini parsing failed, using fallback..."));
-      return this.createFallbackWorkflow(instruction);
+      // Handle specific API errors
+      if (error.message.includes('quota')) {
+        throw new Error(`Quota exceeded for ${modelName}`);
+      } else if (error.message.includes('rate limit')) {
+        throw new Error(`Rate limited for ${modelName}`);
+      } else if (error.message.includes('not found')) {
+        throw new Error(`Model ${modelName} not available`);
+      } else {
+        throw new Error(`API error: ${error.message}`);
+      }
     }
   }
 
   /**
-   * Build the parsing prompt for Gemini
+   * Parse and validate JSON response with error recovery
+   */
+  parseAndValidateJSON(responseText) {
+    try {
+      // First try direct JSON parsing
+      return JSON.parse(responseText);
+    } catch (error) {
+      // Try to extract JSON from text that might have extra content
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      
+      if (jsonMatch) {
+        try {
+          return JSON.parse(jsonMatch[0]);
+        } catch (innerError) {
+          console.log(chalk.yellow("⚠️ Failed to parse extracted JSON"));
+        }
+      }
+      
+      // Try to fix common JSON issues
+      const cleanedText = this.cleanJSONResponse(responseText);
+      try {
+        return JSON.parse(cleanedText);
+      } catch (finalError) {
+        console.log(chalk.yellow("⚠️ JSON parsing completely failed"));
+        return null;
+      }
+    }
+  }
+
+  /**
+   * Clean common JSON response issues
+   */
+  cleanJSONResponse(text) {
+    return text
+      .replace(/```/, '')
+
+      .replace(/```\s*/g, '')
+      .replace(/^\s*```/g, '')
+      .replace(/^[^{]*({[\s\S]*})[^}]*$/, '$1') // Extract JSON object
+      .trim();
+  }
+
+  /**
+   * Enhanced build parsing prompt with model-specific optimizations
    */
   buildParsingPrompt(instruction) {
     return `You are an expert content planning assistant. Analyze this user instruction and extract ALL constraints and requirements into structured JSON.
@@ -46,7 +158,7 @@ User Instruction: "${instruction}"
 
 CONSTRAINT DETECTION PRIORITIES:
 1. WORD COUNT/LENGTH constraints (highest priority)
-2. TIME constraints (deadlines, publication timing)
+2. TIME constraints (deadlines, publication timing)  
 3. FORMAT constraints (structure, style requirements)
 4. CONTENT constraints (what to include/exclude)
 5. AUDIENCE constraints (who this is for)
@@ -60,6 +172,8 @@ WORD COUNT PARSING RULES:
 - "brief/short" = 200-400 words
 - "comprehensive/detailed" = 1200+ words
 - "quick/summary" = 100-300 words
+
+IMPORTANT: You MUST return ONLY a valid JSON object. No explanations, no markdown, no code blocks.
 
 Extract into this EXACT JSON structure:
 
@@ -76,7 +190,7 @@ Extract into this EXACT JSON structure:
     "constraintType": "exact|maximum|minimum|flexible",
     "priority": "critical|important|suggestion",
     "reasoning": "why this length was chosen",
-    "fallbackLength": "if primary constraint fails"
+    "hasCriticalLimit": true/false
   },
   "styleConstraints": {
     "tone": "professional|casual|technical|friendly|formal|conversational",
@@ -92,31 +206,10 @@ Extract into this EXACT JSON structure:
     "dataRequirements": "statistics|examples|case-studies|research|none",
     "depthLevel": "surface|moderate|deep|exhaustive"
   },
-  "structureRequirements": {
-    "headingStructure": "simple|complex|specific-format",
-    "sectionsRequired": ["intro", "main", "conclusion"],
-    "listFormat": "bullets|numbers|mixed|none",
-    "examplesPlacement": "integrated|separate|callouts"
-  },
-  "timeConstraints": {
-    "urgency": "immediate|soon|flexible",
-    "publicationTime": "specific-date|asap|scheduled",
-    "contentLifespan": "evergreen|trending|time-sensitive"
-  },
   "seoConstraints": {
     "primaryKeywords": ["main", "keywords"],
     "keywordDensity": "natural|light|moderate|heavy",
     "searchIntent": "informational|commercial|navigational|transactional"
-  },
-  "qualityConstraints": {
-    "factAccuracy": "critical|important|moderate",
-    "originalityLevel": "unique|adapted|referenced",
-    "evidenceRequired": "citations|examples|data|none"
-  },
-  "outputConstraints": {
-    "format": "json|markdown|html|plain-text",
-    "metadata": "full|minimal|none",
-    "additionalFiles": "none|images|documents"
   },
   "conflictResolution": {
     "hasConflicts": true/false,
@@ -125,23 +218,31 @@ Extract into this EXACT JSON structure:
   }
 }
 
-CRITICAL ANALYSIS REQUIREMENTS:
+CRITICAL REQUIREMENTS:
 1. Extract EXACT word counts when mentioned
-2. Identify constraint conflicts (e.g., "brief but comprehensive")
-3. Determine constraint priority (critical vs nice-to-have)
-4. Flag impossible combinations
-5. Suggest alternatives for conflicting requirements
-
-Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rather than guessing.`;
+2. Set hasCriticalLimit to true if word count is explicitly specified
+3. Identify constraint conflicts
+4. Return ONLY valid JSON - no additional text, explanations, or formatting`;
   }
 
   /**
-   * Validate and enhance parsed workflow
+   * Enhanced validation with model tracking
    */
-  validateAndEnhance(parsedWorkflow, originalInstruction) {
-    // Add original instruction for reference
+  validateAndEnhance(parsedWorkflow, originalInstruction, modelUsed = 'unknown') {
+    // Add metadata
     parsedWorkflow.originalInstruction = originalInstruction;
     parsedWorkflow.parsedAt = new Date().toISOString();
+    parsedWorkflow.modelUsed = modelUsed;
+    parsedWorkflow.fallbackUsed = false;
+
+    // Enhanced length constraint parsing if Gemini missed it
+    if (!parsedWorkflow.lengthConstraints || !parsedWorkflow.lengthConstraints.wordLimit) {
+      const extractedConstraints = this.extractLengthConstraints(originalInstruction);
+      if (extractedConstraints.wordLimit) {
+        parsedWorkflow.lengthConstraints = extractedConstraints;
+        console.log(chalk.blue(`🔍 Enhanced with regex-detected word limit: ${extractedConstraints.wordLimit}`));
+      }
+    }
 
     // Ensure required fields exist with defaults
     if (!parsedWorkflow.contentType) {
@@ -153,66 +254,340 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
     }
 
     if (!parsedWorkflow.audience) {
-      parsedWorkflow.audience = "general";
-    }
-
-    if (!parsedWorkflow.style) {
-      parsedWorkflow.style = {
-        tone: "professional",
-        depth: "intermediate",
-        format: "standard",
+      parsedWorkflow.audience = {
+        level: "general",
+        industry: "general", 
+        expertise: "basic"
       };
     }
 
-    if (
-      !parsedWorkflow.seoKeywords ||
-      parsedWorkflow.seoKeywords.length === 0
-    ) {
-      parsedWorkflow.seoKeywords = this.extractKeywords(originalInstruction);
+    if (!parsedWorkflow.styleConstraints) {
+      parsedWorkflow.styleConstraints = {
+        tone: "professional",
+        complexity: "moderate",
+        format: "standard",
+        voice: "active",
+        perspective: "third-person"
+      };
     }
+
+    if (!parsedWorkflow.contentConstraints) {
+      parsedWorkflow.contentConstraints = {
+        mustInclude: [],
+        shouldInclude: ["examples", "current trends"],
+        mustExclude: [],
+        dataRequirements: "examples",
+        depthLevel: "moderate"
+      };
+    }
+
+    if (!parsedWorkflow.seoConstraints) {
+      parsedWorkflow.seoConstraints = {
+        primaryKeywords: this.extractKeywords(originalInstruction),
+        keywordDensity: "natural",
+        searchIntent: "informational"
+      };
+    }
+
+    // Legacy compatibility for existing code
+    parsedWorkflow.style = parsedWorkflow.styleConstraints || {
+      tone: "professional",
+      depth: "intermediate",
+      format: "standard"
+    };
+
+    parsedWorkflow.seoKeywords = parsedWorkflow.seoConstraints?.primaryKeywords || 
+      this.extractKeywords(originalInstruction);
+
+    parsedWorkflow.requirements = {
+      includeExamples: parsedWorkflow.contentConstraints?.dataRequirements === 'examples',
+      includeData: parsedWorkflow.contentConstraints?.dataRequirements === 'statistics',
+      includeTrends: true,
+      includeSteps: parsedWorkflow.styleConstraints?.format === 'step-by-step',
+      includeComparison: parsedWorkflow.contentType === 'comparison'
+    };
+
+    parsedWorkflow.estimatedLength = this.getEstimatedLength(parsedWorkflow.lengthConstraints);
+    parsedWorkflow.isComplex = this.isComplexWorkflow(parsedWorkflow);
 
     return parsedWorkflow;
   }
 
   /**
-   * Create fallback workflow for failed parsing
+   * Enhanced fallback workflow with better regex detection
    */
   createFallbackWorkflow(instruction) {
+    const lengthConstraints = this.extractLengthConstraints(instruction);
+    
     return {
       contentType: "blog-post",
       topic: this.extractSimpleTopic(instruction),
-      audience: "general",
+      audience: {
+        level: "general",
+        industry: "general",
+        expertise: "basic"
+      },
+      lengthConstraints,
+      styleConstraints: {
+        tone: "professional",
+        complexity: "moderate",
+        format: "standard",
+        voice: "active",
+        perspective: "third-person"
+      },
+      contentConstraints: {
+        mustInclude: [],
+        shouldInclude: ["examples", "current trends"],
+        mustExclude: [],
+        dataRequirements: "examples",
+        depthLevel: "moderate"
+      },
+      seoConstraints: {
+        primaryKeywords: this.extractKeywords(instruction),
+        keywordDensity: "natural",
+        searchIntent: "informational"
+      },
+      conflictResolution: {
+        hasConflicts: false,
+        conflictTypes: [],
+        recommendedPriority: "word count > audience > style"
+      },
+      originalInstruction: instruction,
+      parsedAt: new Date().toISOString(),
+      modelUsed: 'regex-fallback',
+      fallbackUsed: true,
+      
+      // Legacy compatibility
       style: {
         tone: "professional",
-        depth: "intermediate",
-        format: "standard",
+        depth: "intermediate", 
+        format: "standard"
       },
       requirements: {
         includeExamples: true,
         includeData: false,
         includeTrends: true,
         includeSteps: false,
-        includeComparison: false,
+        includeComparison: false
       },
-      specialInstructions: [instruction],
-      estimatedLength: "medium",
       seoKeywords: this.extractKeywords(instruction),
-      isComplex: false,
-      originalInstruction: instruction,
-      parsedAt: new Date().toISOString(),
-      fallbackUsed: true,
+      estimatedLength: this.getEstimatedLength(lengthConstraints),
+      isComplex: false
     };
+  }
+
+  /**
+   * Advanced length constraint extraction with multiple patterns
+   */
+  extractLengthConstraints(instruction) {
+    const instructionLower = instruction.toLowerCase();
+
+    // Advanced word count patterns
+    const exactPatterns = [
+      /(?:exactly|precisely|must be)\s*(\d+)\s*words?/,
+      /\bin\s*(\d+)\s*words?\b/,
+      /(?:write|create|generate).*?(\d+)\s*words?/,
+    ];
+
+    const maxPatterns = [
+      /(?:under|below|less than|max|maximum|no more than)\s*(\d+)\s*words?/,
+      /keep\s*it\s*(?:under|to|below)\s*(\d+)\s*words?/,
+      /(?:limit|cap)\s*(?:to|at)\s*(\d+)\s*words?/,
+    ];
+
+    const minPatterns = [
+      /(?:at least|minimum|min|no less than)\s*(\d+)\s*words?/,
+      /(?:over|above|more than)\s*(\d+)\s*words?/,
+    ];
+
+    const flexiblePatterns = [
+      /(?:around|about|approximately|roughly)\s*(\d+)\s*words?/,
+      /(?:~|±)\s*(\d+)\s*words?/,
+    ];
+
+    // Check exact patterns first (highest priority)
+    for (const pattern of exactPatterns) {
+      const match = instructionLower.match(pattern);
+      if (match) {
+        return {
+          wordLimit: parseInt(match),
+          constraintType: "exact",
+          priority: "critical",
+          reasoning: "Exact word count specified in instruction",
+          hasCriticalLimit: true
+        };
+      }
+    }
+
+    // Check maximum patterns
+    for (const pattern of maxPatterns) {
+      const match = instructionLower.match(pattern);
+      if (match) {
+        return {
+          wordLimit: parseInt(match),
+          constraintType: "maximum",
+          priority: "critical", 
+          reasoning: "Maximum word limit specified",
+          hasCriticalLimit: true
+        };
+      }
+    }
+
+    // Check minimum patterns
+    for (const pattern of minPatterns) {
+      const match = instructionLower.match(pattern);
+      if (match) {
+        return {
+          wordLimit: parseInt(match),
+          constraintType: "minimum",
+          priority: "important",
+          reasoning: "Minimum word count specified",
+          hasCriticalLimit: true
+        };
+      }
+    }
+
+    // Check flexible patterns
+    for (const pattern of flexiblePatterns) {
+      const match = instructionLower.match(pattern);
+      if (match) {
+        return {
+          wordLimit: parseInt(match),
+          constraintType: "flexible",
+          priority: "important",
+          reasoning: "Approximate word count specified",
+          hasCriticalLimit: true
+        };
+      }
+    }
+
+    // Descriptive length terms
+    const lengthDescriptors = {
+      'brief': { wordLimit: 300, constraintType: "maximum", priority: "important" },
+      'short': { wordLimit: 500, constraintType: "maximum", priority: "important" },
+      'quick': { wordLimit: 400, constraintType: "maximum", priority: "important" },
+      'summary': { wordLimit: 350, constraintType: "maximum", priority: "important" },
+      'overview': { wordLimit: 600, constraintType: "flexible", priority: "suggestion" },
+      'comprehensive': { wordLimit: 1500, constraintType: "minimum", priority: "suggestion" },
+      'detailed': { wordLimit: 1200, constraintType: "minimum", priority: "suggestion" },
+      'in-depth': { wordLimit: 2000, constraintType: "minimum", priority: "suggestion" }
+    };
+
+    for (const [descriptor, constraints] of Object.entries(lengthDescriptors)) {
+      if (instructionLower.includes(descriptor)) {
+        return {
+          ...constraints,
+          reasoning: `Descriptive length term "${descriptor}" detected`,
+          hasCriticalLimit: false
+        };
+      }
+    }
+
+    // Default - no specific constraints
+    return {
+      wordLimit: null,
+      constraintType: "flexible",
+      priority: "suggestion",
+      reasoning: "No specific length constraints detected",
+      hasCriticalLimit: false
+    };
+  }
+
+  /**
+   * Model failure tracking
+   */
+  recordModelFailure(modelName, error) {
+    const now = Date.now();
+    const failures = this.modelFailures.get(modelName) || [];
+    
+    failures.push({
+      timestamp: now,
+      error: error.message,
+      type: this.getErrorType(error.message)
+    });
+    
+    // Keep only recent failures (last hour)
+    const recentFailures = failures.filter(f => now - f.timestamp < 3600000);
+    this.modelFailures.set(modelName, recentFailures);
+  }
+
+  clearModelFailure(modelName) {
+    this.modelFailures.delete(modelName);
+  }
+
+  isModelTemporarilyBlocked(modelName) {
+    const failures = this.modelFailures.get(modelName) || [];
+    const now = Date.now();
+    
+    // Block model if more than 3 failures in last 15 minutes
+    const recentFailures = failures.filter(f => now - f.timestamp < 900000);
+    return recentFailures.length >= 3;
+  }
+
+  getErrorType(errorMessage) {
+    if (errorMessage.includes('quota')) return 'quota';
+    if (errorMessage.includes('rate limit')) return 'rate_limit';
+    if (errorMessage.includes('not found')) return 'not_available';
+    return 'api_error';
+  }
+
+  /**
+   * Get estimated length from constraints
+   */
+  getEstimatedLength(lengthConstraints) {
+    if (!lengthConstraints || !lengthConstraints.wordLimit) {
+      return 'medium';
+    }
+    
+    const limit = lengthConstraints.wordLimit;
+    if (limit <= 300) return 'short';
+    if (limit <= 800) return 'medium';
+    if (limit <= 1500) return 'long';
+    return 'comprehensive';
+  }
+
+  /**
+   * Determine if workflow is complex
+   */
+  isComplexWorkflow(workflow) {
+    const hasWordConstraints = workflow.lengthConstraints?.hasCriticalLimit;
+    const hasMultipleRequirements = workflow.contentConstraints?.mustInclude?.length > 2;
+    const isAdvancedContent = ['guide', 'tutorial', 'analysis', 'comparison'].includes(workflow.contentType);
+    
+    return hasWordConstraints || hasMultipleRequirements || isAdvancedContent;
+  }
+
+  /**
+   * Get model status for debugging
+   */
+  getModelStatus() {
+    const status = {};
+    
+    this.modelChain.forEach(model => {
+      const failures = this.modelFailures.get(model.name) || [];
+      const isBlocked = this.isModelTemporarilyBlocked(model.name);
+      
+      status[model.name] = {
+        description: model.description,
+        recentFailures: failures.length,
+        temporarilyBlocked: isBlocked,
+        lastFailure: failures.length > 0 ? new Date(failures[failures.length - 1].timestamp) : null
+      };
+    });
+    
+    return status;
   }
 
   /**
    * Extract simple topic from instruction
    */
   extractSimpleTopic(instruction) {
-    // Remove common command words and extract main topic
     const cleanInstruction = instruction
       .replace(/create|write|generate|make|build/gi, "")
       .replace(/blog post|article|guide|tutorial|analysis/gi, "")
       .replace(/about|on|regarding|concerning/gi, "")
+      .replace(/under \d+ words?/gi, "")
+      .replace(/in \d+ words?/gi, "")
       .trim();
 
     return cleanInstruction || "General topic";
@@ -228,7 +603,7 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
         word.length > 3 &&
         ![
           "create",
-          "write",
+          "write", 
           "generate",
           "blog",
           "post",
@@ -236,10 +611,15 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
           "about",
           "with",
           "including",
-        ].includes(word)
+          "under",
+          "words",
+          "make",
+          "build"
+        ].includes(word) &&
+        !/^\d+$/.test(word) // exclude numbers
     );
 
-    return keywords.slice(0, 5); // Return top 5 keywords
+    return keywords.slice(0, 5);
   }
 
   /**
@@ -254,7 +634,6 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
     const instructionKey = instruction.toLowerCase().trim();
     this.workflowCache.set(instructionKey, result);
 
-    // Limit cache size to prevent memory issues
     if (this.workflowCache.size > 50) {
       const firstKey = this.workflowCache.keys().next().value;
       this.workflowCache.delete(firstKey);
@@ -272,29 +651,18 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
       lengthConstraints,
       styleConstraints,
       contentConstraints,
-      structureRequirements,
-      timeConstraints,
       seoConstraints,
-      qualityConstraints,
     } = workflow;
 
-    let prompt = `Create ${this.getContentTypeDescription(
-      contentType
-    )} about "${topic}".`;
+    let prompt = `Create ${this.getContentTypeDescription(contentType)} about "${topic}".`;
 
     // CRITICAL CONSTRAINTS SECTION
     prompt += "\n\n🚨 CRITICAL CONSTRAINTS - MUST BE FOLLOWED:";
 
     // Word count constraints (highest priority)
-    if (
-      lengthConstraints &&
-      lengthConstraints.wordLimit &&
-      lengthConstraints.priority === "critical"
-    ) {
+    if (lengthConstraints && lengthConstraints.wordLimit && lengthConstraints.hasCriticalLimit) {
       prompt += `\n━━━ WORD COUNT CONSTRAINT ━━━`;
-      prompt += `\nTarget: ${lengthConstraints.constraintType.toUpperCase()} ${
-        lengthConstraints.wordLimit
-      } words`;
+      prompt += `\nTarget: ${lengthConstraints.constraintType.toUpperCase()} ${lengthConstraints.wordLimit} words`;
       prompt += `\nPriority: MANDATORY - This constraint cannot be violated`;
 
       if (lengthConstraints.constraintType === "exact") {
@@ -320,9 +688,7 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
     // Audience constraints
     if (audience && audience.level) {
       prompt += `\n\n━━━ AUDIENCE CONSTRAINTS ━━━`;
-      prompt += `\nTarget Audience: ${audience.level} in ${
-        audience.industry || "general"
-      } field`;
+      prompt += `\nTarget Audience: ${audience.level} in ${audience.industry || "general"} field`;
       prompt += `\nExpertise Level: ${audience.expertise || "mixed"}`;
 
       switch (audience.level) {
@@ -344,108 +710,36 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
       prompt += `\nTone: ${styleConstraints.tone || "professional"}`;
       prompt += `\nComplexity: ${styleConstraints.complexity || "moderate"}`;
       prompt += `\nFormat: ${styleConstraints.format || "standard"}`;
-      prompt += `\nPerspective: ${
-        styleConstraints.perspective || "third-person"
-      }`;
-    }
-
-    // Content requirements
-    if (contentConstraints) {
-      prompt += `\n\n━━━ CONTENT REQUIREMENTS ━━━`;
-
-      if (
-        contentConstraints.mustInclude &&
-        contentConstraints.mustInclude.length > 0
-      ) {
-        prompt += `\nMUST INCLUDE (Mandatory):`;
-        contentConstraints.mustInclude.forEach((item) => {
-          prompt += `\n  ✓ ${item}`;
-        });
-      }
-
-      if (
-        contentConstraints.shouldInclude &&
-        contentConstraints.shouldInclude.length > 0
-      ) {
-        prompt += `\nSHOULD INCLUDE (If space allows):`;
-        contentConstraints.shouldInclude.forEach((item) => {
-          prompt += `\n  • ${item}`;
-        });
-      }
-
-      if (
-        contentConstraints.mustExclude &&
-        contentConstraints.mustExclude.length > 0
-      ) {
-        prompt += `\nMUST EXCLUDE (Forbidden):`;
-        contentConstraints.mustExclude.forEach((item) => {
-          prompt += `\n  ✗ ${item}`;
-        });
-      }
-    }
-
-    // Structure requirements
-    if (structureRequirements && structureRequirements.sectionsRequired) {
-      prompt += `\n\n━━━ STRUCTURE REQUIREMENTS ━━━`;
-      prompt += `\nRequired Sections: ${structureRequirements.sectionsRequired.join(
-        " → "
-      )}`;
-
-      if (structureRequirements.headingStructure === "specific-format") {
-        prompt += `\nHeading Format: Use clear H1 for title, H2 for main sections, H3 for subsections`;
-      }
-
-      if (structureRequirements.listFormat !== "none") {
-        prompt += `\nList Format: Use ${structureRequirements.listFormat} for key points`;
-      }
+      prompt += `\nPerspective: ${styleConstraints.perspective || "third-person"}`;
     }
 
     // SEO constraints
     if (seoConstraints && seoConstraints.primaryKeywords.length > 0) {
       prompt += `\n\n━━━ SEO REQUIREMENTS ━━━`;
-      prompt += `\nPrimary Keywords: ${seoConstraints.primaryKeywords.join(
-        ", "
-      )}`;
-      prompt += `\nKeyword Integration: ${
-        seoConstraints.keywordDensity || "natural"
-      } density`;
-      prompt += `\nSearch Intent: ${
-        seoConstraints.searchIntent || "informational"
-      }`;
-    }
-
-    // Conflict resolution
-    if (
-      workflow.conflictResolution &&
-      workflow.conflictResolution.hasConflicts
-    ) {
-      prompt += `\n\n⚠️ CONSTRAINT CONFLICTS DETECTED`;
-      prompt += `\nConflicts: ${workflow.conflictResolution.conflictTypes.join(
-        ", "
-      )}`;
-      prompt += `\nResolution Priority: ${workflow.conflictResolution.recommendedPriority}`;
+      prompt += `\nPrimary Keywords: ${seoConstraints.primaryKeywords.join(", ")}`;
+      prompt += `\nKeyword Integration: ${seoConstraints.keywordDensity || "natural"} density`;
+      prompt += `\nSearch Intent: ${seoConstraints.searchIntent || "informational"}`;
     }
 
     // Final instructions
     prompt += `\n\n━━━ EXECUTION INSTRUCTIONS ━━━`;
     prompt += `\n1. Follow word count constraint EXACTLY - count words before finalizing`;
     prompt += `\n2. Prioritize critical constraints over nice-to-have features`;
-    prompt += `\n3. If conflicts arise, follow the constraint priority order`;
-    prompt += `\n4. Maintain quality while respecting all constraints`;
-    prompt += `\n5. Double-check that all MUST INCLUDE items are present`;
+    prompt += `\n3. Maintain quality while respecting all constraints`;
+    prompt += `\n4. Use proper heading structure (H1, H2, H3)`;
+    prompt += `\n5. Include internal linking opportunities`;
 
     // Word count reminder
-    if (
-      lengthConstraints &&
-      lengthConstraints.wordLimit &&
-      lengthConstraints.priority === "critical"
-    ) {
+    if (lengthConstraints && lengthConstraints.wordLimit && lengthConstraints.hasCriticalLimit) {
       prompt += `\n\n🎯 FINAL WORD COUNT REMINDER: This content MUST be ${lengthConstraints.constraintType} ${lengthConstraints.wordLimit} words. Count carefully!`;
     }
 
     return prompt;
   }
 
+  /**
+   * Advanced constraint validation and conflict detection
+   */
   validateConstraints(workflow) {
     const validation = {
       isValid: true,
@@ -458,9 +752,7 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
     // Check for constraint conflicts
     if (workflow.lengthConstraints && workflow.contentConstraints) {
       const wordLimit = workflow.lengthConstraints.wordLimit;
-      const mustIncludeCount = workflow.contentConstraints.mustInclude
-        ? workflow.contentConstraints.mustInclude.length
-        : 0;
+      const mustIncludeCount = workflow.contentConstraints.mustInclude ? workflow.contentConstraints.mustInclude.length : 0;
 
       // Conflict: Too many requirements for word limit
       if (wordLimit && wordLimit < 500 && mustIncludeCount > 3) {
@@ -472,11 +764,7 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
       }
 
       // Conflict: Brief content with comprehensive requirements
-      if (
-        wordLimit &&
-        wordLimit < 400 &&
-        workflow.contentConstraints.depthLevel === "deep"
-      ) {
+      if (wordLimit && wordLimit < 400 && workflow.contentConstraints.depthLevel === "deep") {
         validation.conflicts.push({
           type: "length_vs_depth",
           message: "Brief word limit conflicts with deep analysis requirement",
@@ -486,12 +774,8 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
     }
 
     // Style constraint conflicts
-    if (workflow.styleConstraints) {
-      if (
-        workflow.styleConstraints.tone === "casual" &&
-        workflow.audience &&
-        workflow.audience.level === "experts"
-      ) {
+    if (workflow.styleConstraints && workflow.audience) {
+      if (workflow.styleConstraints.tone === "casual" && workflow.audience.level === "experts") {
         validation.warnings.push({
           type: "style_vs_audience",
           message: "Casual tone may not be appropriate for expert audience",
@@ -500,87 +784,18 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
       }
     }
 
-    // Time constraint validation
-    if (
-      workflow.timeConstraints &&
-      workflow.timeConstraints.urgency === "immediate" &&
-      workflow.lengthConstraints &&
-      workflow.lengthConstraints.wordLimit > 1500
-    ) {
-      validation.warnings.push({
-        type: "time_vs_length",
-        message:
-          "Immediate deadline may conflict with comprehensive content requirement",
-        suggestion: "Consider shorter content for faster delivery",
-      });
-    }
-
     // Critical word count validation
     if (workflow.lengthConstraints && workflow.lengthConstraints.wordLimit) {
       const limit = workflow.lengthConstraints.wordLimit;
       if (limit < 50) {
-        validation.criticalIssues.push(
-          "Word limit too low for meaningful content"
-        );
+        validation.criticalIssues.push("Word limit too low for meaningful content");
       }
       if (limit > 5000) {
-        validation.warnings.push(
-          "Very long content may reduce reader engagement"
-        );
+        validation.warnings.push("Very long content may reduce reader engagement");
       }
     }
 
     return validation;
-  }
-
-  resolveConstraintConflicts(workflow) {
-    const conflicts = this.validateConstraints(workflow).conflicts;
-
-    if (conflicts.length === 0) {
-      return workflow; // No conflicts
-    }
-
-    const resolved = { ...workflow };
-
-    conflicts.forEach((conflict) => {
-      switch (conflict.type) {
-        case "length_vs_requirements":
-          // Prioritize word count, reduce requirements
-          if (resolved.contentConstraints.mustInclude.length > 3) {
-            resolved.contentConstraints.shouldInclude = [
-              ...resolved.contentConstraints.shouldInclude,
-              ...resolved.contentConstraints.mustInclude.slice(3),
-            ];
-            resolved.contentConstraints.mustInclude =
-              resolved.contentConstraints.mustInclude.slice(0, 3);
-          }
-          break;
-
-        case "length_vs_depth":
-          // Adjust depth based on word limit
-          if (resolved.lengthConstraints.wordLimit < 500) {
-            resolved.contentConstraints.depthLevel = "surface";
-            resolved.styleConstraints.complexity = "simple";
-          }
-          break;
-
-        case "style_vs_audience":
-          // Adjust style to match audience
-          if (resolved.audience.level === "experts") {
-            resolved.styleConstraints.tone = "professional";
-          }
-          break;
-      }
-    });
-
-    // Mark as resolved
-    resolved.conflictResolution = {
-      hasConflicts: false,
-      resolvedConflicts: conflicts.map((c) => c.type),
-      resolutionApplied: true,
-    };
-
-    return resolved;
   }
 
   /**
@@ -589,12 +804,14 @@ Return ONLY valid JSON. If uncertain about constraints, mark as "flexible" rathe
   getContentTypeDescription(contentType) {
     const descriptions = {
       "blog-post": "a comprehensive blog post",
-      guide: "a detailed step-by-step guide",
-      tutorial: "an educational tutorial",
-      analysis: "an in-depth analysis",
-      comparison: "a detailed comparison",
-      listicle: "an engaging listicle",
+      "guide": "a detailed step-by-step guide",
+      "tutorial": "an educational tutorial",
+      "analysis": "an in-depth analysis",
+      "comparison": "a detailed comparison",
+      "listicle": "an engaging listicle",
       "news-article": "a news-style article",
+      "summary": "a concise summary",
+      "overview": "a comprehensive overview"
     };
 
     return descriptions[contentType] || "a comprehensive blog post";

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node bin/bloggen.js",
-    "dev": "nodemon bin/bloggen.js",
+    "dev": "nodemon bin/bloggen.js --ignore blog-posts/ --ignore *.json",
     "test": "node bin/bloggen.js --help",
     "prepublishOnly": "npm test"
   },
